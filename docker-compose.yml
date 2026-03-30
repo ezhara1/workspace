@@ -1,0 +1,43 @@
+services:
+  llama-server:
+    image: ghcr.io/ggerganov/llama.cpp:server
+    container_name: llama-cpp-server
+    restart: unless-stopped
+    env_file:
+      - .env
+    command:
+      - --model
+      - /models/${MODEL_FILE}
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --ctx-size
+      - ${CTX_SIZE:-8192}
+      - --n-gpu-layers
+      - ${N_GPU_LAYERS:-0}
+      - --parallel
+      - ${PARALLEL_REQUESTS:-1}
+      - --threads
+      - ${THREADS:-8}
+    volumes:
+      - ./models:/models
+    ports:
+      - "8080:8080"
+
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: open-webui
+    restart: unless-stopped
+    depends_on:
+      - llama-server
+    environment:
+      - OPENAI_API_BASE_URL=http://llama-server:8080/v1
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-unused}
+      - WEBUI_AUTH=${WEBUI_AUTH:-True}
+      - ENABLE_SIGNUP=${ENABLE_SIGNUP:-False}
+      - DEFAULT_MODELS=${DEFAULT_MODELS:-llama.cpp}
+    volumes:
+      - ./open-webui:/app/backend/data
+    ports:
+      - "8998:8080"

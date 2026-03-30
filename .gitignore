@@ -1,0 +1,28 @@
+# Local environment
+.env
+.venv/
+venv/
+env/
+
+# Python cache/build
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Runtime/model artifacts
+models/
+*.gguf
+logs/
+open-webui/
+.webui_secret_key
+
+# Notebook/checkpoint noise
+.ipynb_checkpoints/
+
+# OS/editor
+.DS_Store
+.idea/
+.vscode/
