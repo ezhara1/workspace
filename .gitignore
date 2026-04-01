@@ -1,6 +1,7 @@
 # Local environment
 .env
 .venv/
+.venv-vibevoice/
 venv/
 env/
 

@@ -3,6 +3,7 @@
 This project runs:
 - `llama.cpp` server (OpenAI-compatible API) on port `8080`
 - `Open WebUI` on port `8998` for browser access over the internet
+- Optional independent `Voice Mode` service on port `9001` (`speech -> brain -> speech`)
 
 Target model repo:
 `HauhauCS/Qwen3.5-35B-A3B-Uncensored-HauhauCS-Aggressive`
@@ -25,6 +26,11 @@ Push only source/config needed to recreate the pod:
 - `requirements.runpod.txt`
 - `scripts/`
 
+`scripts/` now includes:
+- `run_manual.py` (llama.cpp + Open WebUI launcher)
+- `setup_vibevoice_api.sh` (installs + starts VibeVoice OpenAI-compatible TTS API)
+- `vibevoice_openai_tts_api.py` (API server used by Open WebUI TTS)
+
 Do **not** push runtime artifacts:
 - `.venv/`, `venv/`
 - `models/` and `*.gguf`
@@ -39,6 +45,12 @@ To stage only the minimal reproducible files for GitHub:
 ```bash
 chmod +x scripts/prepare_minimal_push.sh
 ./scripts/prepare_minimal_push.sh
+```
+
+For VibeVoice API setup on a new Runpod, also make the script executable once:
+
+```bash
+chmod +x scripts/setup_vibevoice_api.sh
 ```
 
 If large files were tracked in an earlier commit, untrack them before committing:
@@ -103,10 +115,23 @@ python3 scripts/run_manual.py
 Notes:
 - This command performs the full manual flow: `.env` bootstrap, model download, `.venv` setup, dependency install, and service start.
 - Services are started on `:8080` (llama.cpp) and `:8998` (Open WebUI).
+- To also start Voice Mode, add `--voice-mode` (default port `9001`).
 - For faster restarts after first install, use:
 
 ```bash
 python3 scripts/run_manual.py --skip-install
+```
+
+Run with Voice Mode:
+
+```bash
+python3 scripts/run_manual.py --voice-mode
+```
+
+Custom Voice Mode port:
+
+```bash
+python3 scripts/run_manual.py --voice-mode --voice-mode-port 9100
 ```
 
 Load/switch model directly from a GGUF URL:
@@ -157,6 +182,7 @@ Check status:
 ss -ltnp | grep -E ':8080|:8998'
 curl -sS http://127.0.0.1:8080/v1/models
 curl -I http://127.0.0.1:8998
+curl -sS http://127.0.0.1:9001/health
 ```
 
 Open WebUI:
@@ -164,6 +190,16 @@ Open WebUI:
 
 llama.cpp API (direct):
 - `http://<your-server-ip>:8080/v1`
+
+Voice Mode UI:
+- `http://<your-server-ip>:9001`
+- Click **Start Speaking**, talk, then click **Stop Speaking**.
+- The service transcribes speech (`microsoft/VibeVoice-ASR-HF`), sends text to the existing llama.cpp brain, then plays response speech (`microsoft/VibeVoice-Realtime-0.5B`).
+
+Voice Mode env knobs in `.env`:
+- `VOICE_MODE_ASR_MODEL`
+- `VOICE_MODE_TTS_MODEL`
+- `BRAIN_SYSTEM_PROMPT`
 
 ## 4) Internet exposure on port 8998
 
@@ -197,3 +233,36 @@ For no-Docker/manual restarts:
 ```bash
 python3 scripts/run_manual.py --skip-install
 ```
+
+## 7) VibeVoice OpenAI-compatible TTS API (for Open WebUI)
+
+This project includes a minimal local TTS API for Open WebUI at:
+- `scripts/vibevoice_openai_tts_api.py`
+
+On a fresh Runpod, install/start it with:
+
+```bash
+chmod +x scripts/setup_vibevoice_api.sh
+./scripts/setup_vibevoice_api.sh
+```
+
+Default API URL:
+- `http://127.0.0.1:9001/v1`
+
+Health check:
+
+```bash
+curl -sS http://127.0.0.1:9001/health
+```
+
+Open WebUI TTS settings:
+1. Engine: `OpenAI`
+2. Base URL: `http://127.0.0.1:9001/v1`
+3. API Key: any non-empty value (example: `sk-local`)
+4. TTS Voice: `alloy`
+5. TTS Model: `microsoft/VibeVoice-Realtime-0.5B`
+
+Notes:
+- The VibeVoice API runs in a dedicated venv: `.venv-vibevoice/`.
+- It uses CUDA 12.4 PyTorch wheels to avoid driver mismatch on Runpod images with older NVIDIA drivers.
+- Do not commit `.venv-vibevoice/`, `models/`, or `logs/`.

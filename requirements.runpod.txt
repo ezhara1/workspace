@@ -1,3 +1,10 @@
 --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
 llama-cpp-python[server]
 open-webui
+fastapi
+uvicorn[standard]
+python-multipart
+transformers
+torch
+numpy
+requests

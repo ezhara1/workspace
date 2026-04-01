@@ -18,6 +18,7 @@ REQUIREMENTS_FILE = ROOT / "requirements.runpod.txt"
 LOGS_DIR = ROOT / "logs"
 MODELS_DIR = ROOT / "models"
 WEBUI_DATA_DIR = ROOT / "open-webui"
+VOICE_MODE_SCRIPT = ROOT / "scripts" / "voice_mode_service.py"
 
 
 def run(cmd: list[str], check: bool = True, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
@@ -162,9 +163,10 @@ def ensure_python_runtime(skip_install: bool) -> None:
 def stop_existing() -> None:
     run(["pkill", "-f", "llama_cpp.server"], check=False)
     run(["pkill", "-f", "open-webui serve"], check=False)
+    run(["pkill", "-f", "voice_mode_service.py"], check=False)
 
 
-def start_services(env: dict[str, str], webui_auth: bool) -> None:
+def start_services(env: dict[str, str], webui_auth: bool, start_voice_mode: bool, voice_mode_port: str) -> None:
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
     python_bin = str(VENV / "bin" / "python")
@@ -221,6 +223,32 @@ def start_services(env: dict[str, str], webui_auth: bool) -> None:
             start_new_session=True,
         )
 
+    if start_voice_mode:
+        voice_env = os.environ.copy()
+        voice_env.update(
+            {
+                "BRAIN_BASE_URL": "http://127.0.0.1:8080/v1",
+                "VOICE_MODE_HOST": "0.0.0.0",
+                "VOICE_MODE_PORT": voice_mode_port,
+                "VOICE_MODE_ASR_MODEL": env.get("VOICE_MODE_ASR_MODEL", "microsoft/VibeVoice-ASR-HF"),
+                "VOICE_MODE_TTS_MODEL": env.get("VOICE_MODE_TTS_MODEL", "microsoft/VibeVoice-Realtime-0.5B"),
+                "BRAIN_SYSTEM_PROMPT": env.get(
+                    "BRAIN_SYSTEM_PROMPT",
+                    "You are a helpful conversational assistant. Keep answers concise, clear, and natural for spoken playback.",
+                ),
+            }
+        )
+
+        with (LOGS_DIR / "voice-mode.log").open("ab") as voice_log:
+            subprocess.Popen(
+                [python_bin, str(VOICE_MODE_SCRIPT)],
+                cwd=str(ROOT),
+                stdout=voice_log,
+                stderr=subprocess.STDOUT,
+                env=voice_env,
+                start_new_session=True,
+            )
+
 
 def wait_http(url: str, timeout_sec: int = 60) -> bool:
     deadline = time.time() + timeout_sec
@@ -241,6 +269,8 @@ def main() -> int:
     parser.add_argument("--webui-auth", action="store_true", help="Enable Open WebUI auth/login")
     parser.add_argument("--model-url", default="", help="Direct URL to a .gguf model file to download/use")
     parser.add_argument("--model-file-name", default="", help="Optional output filename for --model-url (must end in .gguf)")
+    parser.add_argument("--voice-mode", action="store_true", help="Start independent voice mode service")
+    parser.add_argument("--voice-mode-port", default="9001", help="Port for voice mode service (default: 9001)")
     args = parser.parse_args()
 
     if not ENV_FILE.exists():
@@ -275,22 +305,37 @@ def main() -> int:
 
     ensure_python_runtime(skip_install=args.skip_install)
     stop_existing()
-    start_services(env, webui_auth=args.webui_auth)
+    start_services(
+        env,
+        webui_auth=args.webui_auth,
+        start_voice_mode=args.voice_mode,
+        voice_mode_port=args.voice_mode_port,
+    )
 
     llama_ok = wait_http("http://127.0.0.1:8080/v1/models", timeout_sec=90)
     webui_ok = wait_http("http://127.0.0.1:8998", timeout_sec=90)
+    voice_ok = True
+    if args.voice_mode:
+        voice_ok = wait_http(f"http://127.0.0.1:{args.voice_mode_port}/health", timeout_sec=180)
 
     print("\n=== Status ===")
     print("llama.cpp API:", "OK" if llama_ok else "NOT READY")
     print("Open WebUI:", "OK" if webui_ok else "NOT READY")
+    if args.voice_mode:
+        print("Voice Mode:", "OK" if voice_ok else "NOT READY")
     print("Logs:")
     print("  -", LOGS_DIR / "llama.log")
     print("  -", LOGS_DIR / "open-webui.log")
+    if args.voice_mode:
+        print("  -", LOGS_DIR / "voice-mode.log")
     print("\nEndpoints:")
     print("  - Open WebUI: http://<your-server-ip>:8998")
     print("  - llama.cpp:  http://<your-server-ip>:8080/v1")
+    if args.voice_mode:
+        print(f"  - Voice Mode: http://<your-server-ip>:{args.voice_mode_port}")
 
-    return 0 if (llama_ok and webui_ok) else 1
+    status_ok = llama_ok and webui_ok and voice_ok
+    return 0 if status_ok else 1
 
 
 if __name__ == "__main__":
