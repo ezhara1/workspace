@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_DIR="${VIBEVOICE_VENV_DIR:-${ROOT_DIR}/.venv-vibevoice}"
 PORT="${VIBEVOICE_API_PORT:-9001}"
+REQUIRE_CUDA="${VIBEVOICE_REQUIRE_CUDA:-true}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 
 mkdir -p "${ROOT_DIR}/logs" "${ROOT_DIR}/models"
@@ -17,11 +18,12 @@ fi
 "${VENV_DIR}/bin/pip" install "vibevoice[streamingtts] @ git+https://github.com/microsoft/VibeVoice.git" fastapi "uvicorn[standard]" python-multipart requests numpy
 
 pkill -f "${ROOT_DIR}/scripts/vibevoice_openai_tts_api.py" || true
-VIBEVOICE_API_PORT="${PORT}" nohup "${VENV_DIR}/bin/python" "${ROOT_DIR}/scripts/vibevoice_openai_tts_api.py" > "${ROOT_DIR}/logs/vibevoice-api.log" 2>&1 &
+VIBEVOICE_API_PORT="${PORT}" VIBEVOICE_REQUIRE_CUDA="${REQUIRE_CUDA}" nohup "${VENV_DIR}/bin/python" "${ROOT_DIR}/scripts/vibevoice_openai_tts_api.py" > "${ROOT_DIR}/logs/vibevoice-api.log" 2>&1 &
 
 sleep 2
 curl -sS "http://127.0.0.1:${PORT}/health" || true
 
 echo
 echo "VibeVoice API started on: http://127.0.0.1:${PORT}/v1"
+echo "VIBEVOICE_REQUIRE_CUDA=${REQUIRE_CUDA}"
 echo "OpenWebUI TTS voice: alloy"

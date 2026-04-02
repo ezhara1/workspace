@@ -2,6 +2,7 @@
 import copy
 import io
 import os
+import re
 import threading
 import wave
 from pathlib import Path
@@ -16,6 +17,18 @@ from pydantic import BaseModel
 
 
 HOST = os.getenv("VIBEVOICE_API_HOST", "0.0.0.0")
+STRIP_THINK_FOR_TTS = os.getenv("VIBEVOICE_STRIP_THINK_FOR_TTS", "true").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+REQUIRE_CUDA = os.getenv("VIBEVOICE_REQUIRE_CUDA", "true").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 PORT = int(os.getenv("VIBEVOICE_API_PORT", "9101"))
 TTS_MODEL = os.getenv("VIBEVOICE_TTS_MODEL", "microsoft/VibeVoice-Realtime-0.5B")
 TTS_CFG_SCALE = float(os.getenv("VIBEVOICE_TTS_CFG_SCALE", "1.5"))
@@ -42,6 +55,7 @@ class SpeechRequest(BaseModel):
 app = FastAPI(title="VibeVoice OpenAI-Compatible TTS API")
 _tts_backend: dict[str, Any] | None = None
 _tts_lock = threading.Lock()
+THINK_BLOCK_PATTERN = re.compile(r"<think>.*?</think>", flags=re.IGNORECASE | re.DOTALL)
 
 
 def _to_wav_bytes(audio_array: np.ndarray, sampling_rate: int) -> bytes:
@@ -57,9 +71,17 @@ def _to_wav_bytes(audio_array: np.ndarray, sampling_rate: int) -> bytes:
     return out.getvalue()
 
 
+def _strip_think_blocks(text: str) -> str:
+    cleaned = THINK_BLOCK_PATTERN.sub("", text or "")
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
 def _pick_torch_device() -> str:
     if torch.cuda.is_available():
         return "cuda"
+    if REQUIRE_CUDA:
+        raise RuntimeError("CUDA is required for VibeVoice TTS, but no CUDA device is available")
     if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         return "mps"
     return "cpu"
@@ -137,6 +159,11 @@ def _ensure_tts_backend() -> dict[str, Any]:
     return _tts_backend
 
 
+@app.on_event("startup")
+def warmup_tts_backend() -> None:
+    _ensure_tts_backend()
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -159,9 +186,12 @@ def audio_voices() -> dict[str, list[dict[str, str]]]:
 
 @app.post("/v1/audio/speech")
 def speech(req: SpeechRequest) -> Response:
-    text = (req.input or "").strip()
-    if not text:
+    raw_text = (req.input or "").strip()
+    if not raw_text:
         raise HTTPException(status_code=400, detail="'input' is required")
+    text = _strip_think_blocks(raw_text) if STRIP_THINK_FOR_TTS else raw_text
+    if not text:
+        text = raw_text
 
     fmt = (req.response_format or "wav").lower()
     # OpenWebUI/OpenAI clients often default to mp3. We currently generate wav/pcm,
