@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import argparse
+import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -215,6 +217,8 @@ def start_services(env: dict[str, str], webui_auth: bool, tts_port: str) -> None
     ctx_size = env.get("CTX_SIZE", "8192")
     n_gpu_layers = env.get("N_GPU_LAYERS", "999")
     threads = env.get("THREADS", "8")
+    enable_thinking = env.get("ENABLE_THINKING", "false").strip().lower() in {"1", "true", "yes", "on"}
+    llama_extra_args = env.get("LLAMA_SERVER_EXTRA_ARGS", "").strip()
     openai_api_key = env.get("OPENAI_API_KEY", "unused")
     default_models = env.get("DEFAULT_MODELS", f"/workspace/models/{model_file}")
     model_timeout = env.get("AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST", "120")
@@ -238,6 +242,13 @@ def start_services(env: dict[str, str], webui_auth: bool, tts_port: str) -> None
         "--n_threads",
         threads,
     ]
+    if not enable_thinking:
+        llama_cmd += [
+            "--chat_template_kwargs",
+            json.dumps({"enable_thinking": False}, separators=(",", ":")),
+        ]
+    if llama_extra_args:
+        llama_cmd += shlex.split(llama_extra_args)
 
     webui_env = os.environ.copy()
     webui_env.update(
@@ -330,6 +341,7 @@ def main() -> int:
         "MODEL_FILE": model_file,
         "N_GPU_LAYERS": env.get("N_GPU_LAYERS", "999") or "999",
         "OPENAI_API_BASE_URL": "http://127.0.0.1:8080/v1",
+        "ENABLE_THINKING": env.get("ENABLE_THINKING", "false") or "false",
         "AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST": env.get("AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST", "120") or "120",
         "DEFAULT_MODELS": default_model_path if args.model_url else (env.get("DEFAULT_MODELS", default_model_path) or default_model_path),
         "VIBEVOICE_API_PORT": env.get("VIBEVOICE_API_PORT", args.tts_port) or args.tts_port,
