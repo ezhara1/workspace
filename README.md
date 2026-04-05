@@ -117,6 +117,7 @@ Notes:
 - Services are started on `:8080` (llama.cpp), `:8998` (Open WebUI), and `:9001` (VibeVoice TTS API).
 - VibeVoice is started with `VIBEVOICE_REQUIRE_CUDA=true` so it uses GPU (and fails fast if CUDA is unavailable).
 - For Qwen3.5 models, direct/no-thinking responses are enabled by default in manual mode (`ENABLE_THINKING=false`). In this mode `run_manual.py` launches `llama_cpp.server` with `--temp 0.7 --top-p 0.8 --top-k 20 --min-p 0 --chat_template_kwargs {"enable_thinking":false}`. Set `ENABLE_THINKING=true` to restore thinking mode.
+- The llama server launch now also includes `--jinja --reasoning-budget 0` to support Qwen3.5/Open WebUI thinking-toggle workflows.
 - For faster restarts after first install, use:
 
 ```bash
@@ -153,6 +154,8 @@ sed -i 's/^N_GPU_LAYERS=.*/N_GPU_LAYERS=999/' .env
 
 # Start llama.cpp API server on :8080
 nohup .venv/bin/python -m llama_cpp.server \
+  --jinja \
+  --reasoning-budget 0 \
   --model "/workspace/models/${MODEL_FILE}" \
   --host 0.0.0.0 \
   --port 8080 \
