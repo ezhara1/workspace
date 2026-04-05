@@ -116,7 +116,7 @@ Notes:
 - This command performs the full manual flow: `.env` bootstrap, model download, `.venv` + `.venv-vibevoice` setup, dependency install, and service start.
 - Services are started on `:8080` (llama.cpp), `:8998` (Open WebUI), and `:9001` (VibeVoice TTS API).
 - VibeVoice is started with `VIBEVOICE_REQUIRE_CUDA=true` so it uses GPU (and fails fast if CUDA is unavailable).
-- For Qwen3.5 models, direct/no-thinking responses are enabled by default in manual mode (`ENABLE_THINKING=false`). Set `ENABLE_THINKING=true` to restore thinking mode.
+- For Qwen3.5 models, direct/no-thinking responses are enabled by default in manual mode (`ENABLE_THINKING=false`). In this mode `run_manual.py` launches `llama_cpp.server` with `--temp 0.7 --top-p 0.8 --top-k 20 --min-p 0 --chat_template_kwargs {"enable_thinking":false}`. Set `ENABLE_THINKING=true` to restore thinking mode.
 - For faster restarts after first install, use:
 
 ```bash

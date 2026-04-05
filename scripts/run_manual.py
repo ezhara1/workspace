@@ -244,6 +244,14 @@ def start_services(env: dict[str, str], webui_auth: bool, tts_port: str) -> None
     ]
     if not enable_thinking:
         llama_cmd += [
+            "--temp",
+            "0.7",
+            "--top-p",
+            "0.8",
+            "--top-k",
+            "20",
+            "--min-p",
+            "0",
             "--chat_template_kwargs",
             json.dumps({"enable_thinking": False}, separators=(",", ":")),
         ]
