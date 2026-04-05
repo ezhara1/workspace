@@ -116,6 +116,7 @@ Notes:
 - This command performs the full manual flow: `.env` bootstrap, model download, `.venv` + `.venv-vibevoice` setup, dependency install, and service start.
 - Services are started on `:8080` (llama.cpp), `:8998` (Open WebUI), and `:9001` (VibeVoice TTS API).
 - VibeVoice is started with `VIBEVOICE_REQUIRE_CUDA=true` so it uses GPU (and fails fast if CUDA is unavailable).
+- For Qwen3.5 models, you can disable default reasoning/thinking mode globally in manual mode by setting `ENABLE_THINKING=false` in `.env` (this passes `--chat_template_kwargs {"enable_thinking":false}` to `llama_cpp.server`).
 - For faster restarts after first install, use:
 
 ```bash
@@ -199,6 +200,9 @@ VibeVoice env knobs in `.env`:
 - `VIBEVOICE_TTS_MODEL`
 - `VIBEVOICE_STRIP_THINK_FOR_TTS`
 
+llama-cpp-python (manual mode) reasoning knob in `.env`:
+- `ENABLE_THINKING` (`true` or `false`; defaults to `true`)
+
 ## 4) Internet exposure on port 8998
 
 - Ensure cloud/security group/firewall allows inbound TCP `8998`
@@ -218,6 +222,7 @@ Edit `.env`:
 - `CTX_SIZE`: context window
 - `THREADS`: CPU threads for inference
 - `PARALLEL_REQUESTS`: concurrent request slots
+- `ENABLE_THINKING=false`: disable Qwen3.5 default "thinking" in `llama_cpp.server` manual mode
 
 Then restart:
 
