@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -20,6 +21,9 @@ LOGS_DIR = ROOT / "logs"
 MODELS_DIR = ROOT / "models"
 WEBUI_DATA_DIR = ROOT / "open-webui"
 VIBEVOICE_API_SCRIPT = ROOT / "scripts" / "vibevoice_openai_tts_api.py"
+LLAMA_CPP_DIR = ROOT / "llama.cpp"
+LLAMA_CPP_BUILD_DIR = LLAMA_CPP_DIR / "build"
+LLAMA_SERVER_BIN_CANDIDATE = LLAMA_CPP_BUILD_DIR / "bin" / "llama-server"
 
 
 def run(cmd: list[str], check: bool = True, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
@@ -31,6 +35,44 @@ def run_capture(cmd: list[str], env: dict[str, str] | None = None) -> str:
     print("+", " ".join(cmd))
     out = subprocess.check_output(cmd, cwd=str(ROOT), text=True, env=env)
     return out
+
+
+def find_llama_server_binary(env: dict[str, str]) -> str | None:
+    configured = env.get("LLAMA_SERVER_BIN", "").strip()
+    if configured:
+        path = Path(configured)
+        if path.exists():
+            return str(path)
+
+    discovered = shutil.which("llama-server")
+    if discovered:
+        return discovered
+
+    if LLAMA_SERVER_BIN_CANDIDATE.exists():
+        return str(LLAMA_SERVER_BIN_CANDIDATE)
+    return None
+
+
+def ensure_llama_cpp_runtime(skip_install: bool, env: dict[str, str]) -> str:
+    existing = find_llama_server_binary(env)
+    if existing:
+        return existing
+    if skip_install:
+        raise RuntimeError(
+            "llama-server binary not found. Re-run without --skip-install, or set LLAMA_SERVER_BIN in .env."
+        )
+
+    if not LLAMA_CPP_DIR.exists():
+        run(["git", "clone", "https://github.com/ggml-org/llama.cpp.git", str(LLAMA_CPP_DIR)])
+
+    run(["cmake", "-S", str(LLAMA_CPP_DIR), "-B", str(LLAMA_CPP_BUILD_DIR), "-DGGML_CUDA=ON"], check=False)
+    run(["cmake", "-S", str(LLAMA_CPP_DIR), "-B", str(LLAMA_CPP_BUILD_DIR)])
+    run(["cmake", "--build", str(LLAMA_CPP_BUILD_DIR), "--config", "Release", "-j"])
+
+    built = find_llama_server_binary(env)
+    if not built:
+        raise RuntimeError("Failed to build/find llama-server binary")
+    return built
 
 
 def parse_env(path: Path) -> dict[str, str]:
@@ -151,13 +193,6 @@ def ensure_python_runtime(skip_install: bool) -> None:
     if REQUIREMENTS_FILE.exists():
         run([pip, "install", "-r", str(REQUIREMENTS_FILE)])
     else:
-        run([
-            pip,
-            "install",
-            "--extra-index-url",
-            "https://abetlen.github.io/llama-cpp-python/whl/cu124",
-            "llama-cpp-python[server]",
-        ])
         run([pip, "install", "open-webui"])
 
 
@@ -201,43 +236,54 @@ def ensure_vibevoice_runtime(skip_install: bool) -> None:
 
 def stop_existing() -> None:
     run(["pkill", "-f", "llama_cpp.server"], check=False)
+    run(["pkill", "-f", "llama-server"], check=False)
     run(["pkill", "-f", "open-webui serve"], check=False)
     run(["pkill", "-f", "vibevoice_openai_tts_api.py"], check=False)
 
 
-def start_services(env: dict[str, str], webui_auth: bool, tts_port: str) -> None:
+def start_services(env: dict[str, str], webui_auth: bool, tts_port: str, llama_server_bin: str) -> None:
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
-    python_bin = str(VENV / "bin" / "python")
     open_webui_bin = str(VENV / "bin" / "open-webui")
 
     model_file = env["MODEL_FILE"]
     ctx_size = env.get("CTX_SIZE", "8192")
     n_gpu_layers = env.get("N_GPU_LAYERS", "999")
     threads = env.get("THREADS", "8")
+    enable_thinking = env.get("ENABLE_THINKING", "false").strip().lower() in {"1", "true", "yes", "on"}
+    reasoning_budget = (
+        env.get("LLAMA_REASONING_BUDGET_THINKING", "1024")
+        if enable_thinking
+        else env.get("LLAMA_REASONING_BUDGET_NO_THINKING", "0")
+    )
+    llama_extra_args = env.get("LLAMA_SERVER_EXTRA_ARGS", "").strip()
     openai_api_key = env.get("OPENAI_API_KEY", "unused")
     default_models = env.get("DEFAULT_MODELS", f"/workspace/models/{model_file}")
     model_timeout = env.get("AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST", "120")
     vibevoice_tts_model = env.get("VIBEVOICE_TTS_MODEL", "microsoft/VibeVoice-Realtime-0.5B")
     vibevoice_strip_think = env.get("VIBEVOICE_STRIP_THINK_FOR_TTS", "true")
-
     llama_cmd = [
-        python_bin,
-        "-m",
-        "llama_cpp.server",
+        llama_server_bin,
         "--model",
         str(MODELS_DIR / model_file),
         "--host",
         "0.0.0.0",
         "--port",
         "8080",
-        "--n_ctx",
+        "--ctx-size",
         ctx_size,
-        "--n_gpu_layers",
+        "--n-gpu-layers",
         n_gpu_layers,
-        "--n_threads",
+        "--threads",
         threads,
+        "--jinja",
+        "--reasoning-budget",
+        reasoning_budget,
+        "--chat-template-kwargs",
+        '{"enable_thinking": false}' if not enable_thinking else '{"enable_thinking": true}',
     ]
+    if llama_extra_args:
+        llama_cmd += shlex.split(llama_extra_args)
 
     webui_env = os.environ.copy()
     webui_env.update(
@@ -330,6 +376,9 @@ def main() -> int:
         "MODEL_FILE": model_file,
         "N_GPU_LAYERS": env.get("N_GPU_LAYERS", "999") or "999",
         "OPENAI_API_BASE_URL": "http://127.0.0.1:8080/v1",
+        "ENABLE_THINKING": env.get("ENABLE_THINKING", "false") or "false",
+        "LLAMA_REASONING_BUDGET_NO_THINKING": env.get("LLAMA_REASONING_BUDGET_NO_THINKING", "0") or "0",
+        "LLAMA_REASONING_BUDGET_THINKING": env.get("LLAMA_REASONING_BUDGET_THINKING", "1024") or "1024",
         "AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST": env.get("AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST", "120") or "120",
         "DEFAULT_MODELS": default_model_path if args.model_url else (env.get("DEFAULT_MODELS", default_model_path) or default_model_path),
         "VIBEVOICE_API_PORT": env.get("VIBEVOICE_API_PORT", args.tts_port) or args.tts_port,
@@ -345,12 +394,14 @@ def main() -> int:
     env = parse_env(ENV_FILE)
 
     ensure_python_runtime(skip_install=args.skip_install)
+    llama_server_bin = ensure_llama_cpp_runtime(skip_install=args.skip_install, env=env)
     ensure_vibevoice_runtime(skip_install=args.skip_install)
     stop_existing()
     start_services(
         env,
         webui_auth=args.webui_auth,
         tts_port=args.tts_port,
+        llama_server_bin=llama_server_bin,
     )
 
     llama_ok = wait_http("http://127.0.0.1:8080/v1/models", timeout_sec=90)
