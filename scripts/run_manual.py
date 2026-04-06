@@ -2,7 +2,6 @@
 import argparse
 import json
 import os
-import re
 import shlex
 import shutil
 import subprocess
@@ -23,6 +22,9 @@ LOGS_DIR = ROOT / "logs"
 MODELS_DIR = ROOT / "models"
 WEBUI_DATA_DIR = ROOT / "open-webui"
 VIBEVOICE_API_SCRIPT = ROOT / "scripts" / "vibevoice_openai_tts_api.py"
+LLAMA_CPP_DIR = ROOT / "llama.cpp"
+LLAMA_CPP_BUILD_DIR = LLAMA_CPP_DIR / "build"
+LLAMA_SERVER_BIN_CANDIDATE = LLAMA_CPP_BUILD_DIR / "bin" / "llama-server"
 
 
 def run(cmd: list[str], check: bool = True, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
@@ -36,34 +38,42 @@ def run_capture(cmd: list[str], env: dict[str, str] | None = None) -> str:
     return out
 
 
-def get_server_supported_flags(python_bin: str) -> set[str]:
-    try:
-        out = subprocess.check_output(
-            [python_bin, "-m", "llama_cpp.server", "--help"],
-            cwd=str(ROOT),
-            text=True,
-            stderr=subprocess.STDOUT,
+def find_llama_server_binary(env: dict[str, str]) -> str | None:
+    configured = env.get("LLAMA_SERVER_BIN", "").strip()
+    if configured:
+        path = Path(configured)
+        if path.exists():
+            return str(path)
+
+    discovered = shutil.which("llama-server")
+    if discovered:
+        return discovered
+
+    if LLAMA_SERVER_BIN_CANDIDATE.exists():
+        return str(LLAMA_SERVER_BIN_CANDIDATE)
+    return None
+
+
+def ensure_llama_cpp_runtime(skip_install: bool, env: dict[str, str]) -> str:
+    existing = find_llama_server_binary(env)
+    if existing:
+        return existing
+    if skip_install:
+        raise RuntimeError(
+            "llama-server binary not found. Re-run without --skip-install, or set LLAMA_SERVER_BIN in .env."
         )
-    except Exception:
-        return set()
-    return set(re.findall(r"--[a-zA-Z0-9_-]+", out))
 
+    if not LLAMA_CPP_DIR.exists():
+        run(["git", "clone", "https://github.com/ggml-org/llama.cpp.git", str(LLAMA_CPP_DIR)])
 
-def append_supported_flag(
-    cmd: list[str],
-    supported_flags: set[str],
-    preferred_flag: str,
-    value: str | None = None,
-    alternates: tuple[str, ...] = (),
-) -> bool:
-    candidates = (preferred_flag, *alternates)
-    chosen = next((flag for flag in candidates if flag in supported_flags), None)
-    if chosen is None:
-        return False
-    cmd.append(chosen)
-    if value is not None:
-        cmd.append(value)
-    return True
+    run(["cmake", "-S", str(LLAMA_CPP_DIR), "-B", str(LLAMA_CPP_BUILD_DIR), "-DGGML_CUDA=ON"], check=False)
+    run(["cmake", "-S", str(LLAMA_CPP_DIR), "-B", str(LLAMA_CPP_BUILD_DIR)])
+    run(["cmake", "--build", str(LLAMA_CPP_BUILD_DIR), "--config", "Release", "-j"])
+
+    built = find_llama_server_binary(env)
+    if not built:
+        raise RuntimeError("Failed to build/find llama-server binary")
+    return built
 
 
 def parse_env(path: Path) -> dict[str, str]:
@@ -184,13 +194,6 @@ def ensure_python_runtime(skip_install: bool) -> None:
     if REQUIREMENTS_FILE.exists():
         run([pip, "install", "-r", str(REQUIREMENTS_FILE)])
     else:
-        run([
-            pip,
-            "install",
-            "--extra-index-url",
-            "https://abetlen.github.io/llama-cpp-python/whl/cu124",
-            "llama-cpp-python[server]",
-        ])
         run([pip, "install", "open-webui"])
 
 
@@ -234,14 +237,14 @@ def ensure_vibevoice_runtime(skip_install: bool) -> None:
 
 def stop_existing() -> None:
     run(["pkill", "-f", "llama_cpp.server"], check=False)
+    run(["pkill", "-f", "llama-server"], check=False)
     run(["pkill", "-f", "open-webui serve"], check=False)
     run(["pkill", "-f", "vibevoice_openai_tts_api.py"], check=False)
 
 
-def start_services(env: dict[str, str], webui_auth: bool, tts_port: str) -> None:
+def start_services(env: dict[str, str], webui_auth: bool, tts_port: str, llama_server_bin: str) -> None:
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
-    python_bin = str(VENV / "bin" / "python")
     open_webui_bin = str(VENV / "bin" / "open-webui")
 
     model_file = env["MODEL_FILE"]
@@ -255,42 +258,37 @@ def start_services(env: dict[str, str], webui_auth: bool, tts_port: str) -> None
     model_timeout = env.get("AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST", "120")
     vibevoice_tts_model = env.get("VIBEVOICE_TTS_MODEL", "microsoft/VibeVoice-Realtime-0.5B")
     vibevoice_strip_think = env.get("VIBEVOICE_STRIP_THINK_FOR_TTS", "true")
-    supported_flags = get_server_supported_flags(python_bin)
-
     llama_cmd = [
-        python_bin,
-        "-m",
-        "llama_cpp.server",
-        "--jinja",
-        "--reasoning-budget",
-        "0",
+        llama_server_bin,
         "--model",
         str(MODELS_DIR / model_file),
         "--host",
         "0.0.0.0",
         "--port",
         "8080",
-        "--n_ctx",
+        "--ctx-size",
         ctx_size,
-        "--n_gpu_layers",
+        "--n-gpu-layers",
         n_gpu_layers,
-        "--n_threads",
+        "--threads",
         threads,
+        "--jinja",
+        "--reasoning-budget",
+        "0",
     ]
-    append_supported_flag(llama_cmd, supported_flags, "--jinja")
-    append_supported_flag(llama_cmd, supported_flags, "--reasoning-budget", "0")
     if not enable_thinking:
-        append_supported_flag(llama_cmd, supported_flags, "--temp", "0.7", alternates=("--temperature",))
-        append_supported_flag(llama_cmd, supported_flags, "--top-p", "0.8", alternates=("--top_p",))
-        append_supported_flag(llama_cmd, supported_flags, "--top-k", "20", alternates=("--top_k",))
-        append_supported_flag(llama_cmd, supported_flags, "--min-p", "0", alternates=("--min_p",))
-        append_supported_flag(
-            llama_cmd,
-            supported_flags,
-            "--chat_template_kwargs",
-            json.dumps({"enable_thinking": False}, separators=(",", ":")),
-            alternates=("--chat-template-kwargs",),
-        )
+        llama_cmd += [
+            "--temp",
+            "0.7",
+            "--top-p",
+            "0.8",
+            "--top-k",
+            "20",
+            "--min-p",
+            "0",
+            "--chat-template-kwargs",
+            '{"enable_thinking":false}',
+        ]
     if llama_extra_args:
         llama_cmd += shlex.split(llama_extra_args)
 
@@ -401,12 +399,14 @@ def main() -> int:
     env = parse_env(ENV_FILE)
 
     ensure_python_runtime(skip_install=args.skip_install)
+    llama_server_bin = ensure_llama_cpp_runtime(skip_install=args.skip_install, env=env)
     ensure_vibevoice_runtime(skip_install=args.skip_install)
     stop_existing()
     start_services(
         env,
         webui_auth=args.webui_auth,
         tts_port=args.tts_port,
+        llama_server_bin=llama_server_bin,
     )
 
     llama_ok = wait_http("http://127.0.0.1:8080/v1/models", timeout_sec=90)
