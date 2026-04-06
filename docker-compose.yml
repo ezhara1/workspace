@@ -8,7 +8,7 @@ services:
     command:
       - --jinja
       - --reasoning-budget
-      - "0"
+      - ${LLAMA_REASONING_BUDGET_NO_THINKING:-0}
       - --model
       - /models/${MODEL_FILE}
       - --host

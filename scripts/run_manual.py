@@ -252,6 +252,11 @@ def start_services(env: dict[str, str], webui_auth: bool, tts_port: str, llama_s
     n_gpu_layers = env.get("N_GPU_LAYERS", "999")
     threads = env.get("THREADS", "8")
     enable_thinking = env.get("ENABLE_THINKING", "false").strip().lower() in {"1", "true", "yes", "on"}
+    reasoning_budget = (
+        env.get("LLAMA_REASONING_BUDGET_THINKING", "1024")
+        if enable_thinking
+        else env.get("LLAMA_REASONING_BUDGET_NO_THINKING", "0")
+    )
     llama_extra_args = env.get("LLAMA_SERVER_EXTRA_ARGS", "").strip()
     openai_api_key = env.get("OPENAI_API_KEY", "unused")
     default_models = env.get("DEFAULT_MODELS", f"/workspace/models/{model_file}")
@@ -274,21 +279,10 @@ def start_services(env: dict[str, str], webui_auth: bool, tts_port: str, llama_s
         threads,
         "--jinja",
         "--reasoning-budget",
-        "0",
+        reasoning_budget,
+        "--chat-template-kwargs",
+        '{"enable_thinking": false}' if not enable_thinking else '{"enable_thinking": true}',
     ]
-    if not enable_thinking:
-        llama_cmd += [
-            "--temp",
-            "0.7",
-            "--top-p",
-            "0.8",
-            "--top-k",
-            "20",
-            "--min-p",
-            "0",
-            "--chat-template-kwargs",
-            '{"enable_thinking":false}',
-        ]
     if llama_extra_args:
         llama_cmd += shlex.split(llama_extra_args)
 
@@ -384,6 +378,8 @@ def main() -> int:
         "N_GPU_LAYERS": env.get("N_GPU_LAYERS", "999") or "999",
         "OPENAI_API_BASE_URL": "http://127.0.0.1:8080/v1",
         "ENABLE_THINKING": env.get("ENABLE_THINKING", "false") or "false",
+        "LLAMA_REASONING_BUDGET_NO_THINKING": env.get("LLAMA_REASONING_BUDGET_NO_THINKING", "0") or "0",
+        "LLAMA_REASONING_BUDGET_THINKING": env.get("LLAMA_REASONING_BUDGET_THINKING", "1024") or "1024",
         "AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST": env.get("AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST", "120") or "120",
         "DEFAULT_MODELS": default_model_path if args.model_url else (env.get("DEFAULT_MODELS", default_model_path) or default_model_path),
         "VIBEVOICE_API_PORT": env.get("VIBEVOICE_API_PORT", args.tts_port) or args.tts_port,
