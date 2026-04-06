@@ -2,6 +2,7 @@
 import argparse
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -33,6 +34,36 @@ def run_capture(cmd: list[str], env: dict[str, str] | None = None) -> str:
     print("+", " ".join(cmd))
     out = subprocess.check_output(cmd, cwd=str(ROOT), text=True, env=env)
     return out
+
+
+def get_server_supported_flags(python_bin: str) -> set[str]:
+    try:
+        out = subprocess.check_output(
+            [python_bin, "-m", "llama_cpp.server", "--help"],
+            cwd=str(ROOT),
+            text=True,
+            stderr=subprocess.STDOUT,
+        )
+    except Exception:
+        return set()
+    return set(re.findall(r"--[a-zA-Z0-9_-]+", out))
+
+
+def append_supported_flag(
+    cmd: list[str],
+    supported_flags: set[str],
+    preferred_flag: str,
+    value: str | None = None,
+    alternates: tuple[str, ...] = (),
+) -> bool:
+    candidates = (preferred_flag, *alternates)
+    chosen = next((flag for flag in candidates if flag in supported_flags), None)
+    if chosen is None:
+        return False
+    cmd.append(chosen)
+    if value is not None:
+        cmd.append(value)
+    return True
 
 
 def parse_env(path: Path) -> dict[str, str]:
@@ -224,6 +255,7 @@ def start_services(env: dict[str, str], webui_auth: bool, tts_port: str) -> None
     model_timeout = env.get("AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST", "120")
     vibevoice_tts_model = env.get("VIBEVOICE_TTS_MODEL", "microsoft/VibeVoice-Realtime-0.5B")
     vibevoice_strip_think = env.get("VIBEVOICE_STRIP_THINK_FOR_TTS", "true")
+    supported_flags = get_server_supported_flags(python_bin)
 
     llama_cmd = [
         python_bin,
@@ -245,19 +277,20 @@ def start_services(env: dict[str, str], webui_auth: bool, tts_port: str) -> None
         "--n_threads",
         threads,
     ]
+    append_supported_flag(llama_cmd, supported_flags, "--jinja")
+    append_supported_flag(llama_cmd, supported_flags, "--reasoning-budget", "0")
     if not enable_thinking:
-        llama_cmd += [
-            "--temp",
-            "0.7",
-            "--top-p",
-            "0.8",
-            "--top-k",
-            "20",
-            "--min-p",
-            "0",
+        append_supported_flag(llama_cmd, supported_flags, "--temp", "0.7", alternates=("--temperature",))
+        append_supported_flag(llama_cmd, supported_flags, "--top-p", "0.8", alternates=("--top_p",))
+        append_supported_flag(llama_cmd, supported_flags, "--top-k", "20", alternates=("--top_k",))
+        append_supported_flag(llama_cmd, supported_flags, "--min-p", "0", alternates=("--min_p",))
+        append_supported_flag(
+            llama_cmd,
+            supported_flags,
             "--chat_template_kwargs",
             json.dumps({"enable_thinking": False}, separators=(",", ":")),
-        ]
+            alternates=("--chat-template-kwargs",),
+        )
     if llama_extra_args:
         llama_cmd += shlex.split(llama_extra_args)
 
