@@ -275,20 +275,9 @@ def start_services(env: dict[str, str], webui_auth: bool, tts_port: str, llama_s
         "--jinja",
         "--reasoning-budget",
         "0",
+        "--chat-template-kwargs",
+        '{"enable_thinking": false}' if not enable_thinking else '{"enable_thinking": true}',
     ]
-    if not enable_thinking:
-        llama_cmd += [
-            "--temp",
-            "0.7",
-            "--top-p",
-            "0.8",
-            "--top-k",
-            "20",
-            "--min-p",
-            "0",
-            "--chat-template-kwargs",
-            '{"enable_thinking":false}',
-        ]
     if llama_extra_args:
         llama_cmd += shlex.split(llama_extra_args)
 

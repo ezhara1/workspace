@@ -116,13 +116,22 @@ Notes:
 - This command performs the full manual flow: `.env` bootstrap, model download, `.venv` + `.venv-vibevoice` setup, dependency install, and service start.
 - Services are started on `:8080` (llama.cpp), `:8998` (Open WebUI), and `:9001` (VibeVoice TTS API).
 - VibeVoice is started with `VIBEVOICE_REQUIRE_CUDA=true` so it uses GPU (and fails fast if CUDA is unavailable).
-- For Qwen3.5 models, direct/no-thinking responses are enabled by default in manual mode (`ENABLE_THINKING=false`). In this mode `run_manual.py` launches native `llama-server` with `--temp 0.7 --top-p 0.8 --top-k 20 --min-p 0 --chat-template-kwargs {"enable_thinking":false}`. Set `ENABLE_THINKING=true` to restore thinking mode.
+- For Qwen3.5 models, direct/no-thinking responses are enabled by default in manual mode (`ENABLE_THINKING=false`). `run_manual.py` launches native `llama-server` with `--jinja --reasoning-budget 0 --chat-template-kwargs '{"enable_thinking": false}'`. Set `ENABLE_THINKING=true` to send `{"enable_thinking": true}` instead.
 - Manual mode now uses native `llama.cpp` (`llama-server`) instead of the Python `llama_cpp.server` wrapper.
 - For faster restarts after first install, use:
 
 ```bash
 python3 scripts/run_manual.py --skip-install
 ```
+
+Enable reasoning mode explicitly (manual mode):
+1. Set `ENABLE_THINKING=true` in `.env`.
+2. Restart services with:
+   ```bash
+   python3 scripts/run_manual.py --skip-install
+   ```
+3. The launcher will then pass:
+   `--chat-template-kwargs '{"enable_thinking": true}'`.
 
 Custom VibeVoice TTS port:
 
@@ -160,6 +169,9 @@ nohup /workspace/llama.cpp/build/bin/llama-server \
   --ctx-size "${CTX_SIZE:-8192}" \
   --n-gpu-layers "${N_GPU_LAYERS:-999}" \
   --threads "${THREADS:-8}" \
+  --jinja \
+  --reasoning-budget 0 \
+  --chat-template-kwargs '{"enable_thinking": false}' \
   > logs/llama.log 2>&1 &
 
 # Start Open WebUI on :8998
