@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 import argparse
+import json
 import os
+import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -31,6 +34,36 @@ def run_capture(cmd: list[str], env: dict[str, str] | None = None) -> str:
     print("+", " ".join(cmd))
     out = subprocess.check_output(cmd, cwd=str(ROOT), text=True, env=env)
     return out
+
+
+def get_server_supported_flags(python_bin: str) -> set[str]:
+    try:
+        out = subprocess.check_output(
+            [python_bin, "-m", "llama_cpp.server", "--help"],
+            cwd=str(ROOT),
+            text=True,
+            stderr=subprocess.STDOUT,
+        )
+    except Exception:
+        return set()
+    return set(re.findall(r"--[a-zA-Z0-9_-]+", out))
+
+
+def append_supported_flag(
+    cmd: list[str],
+    supported_flags: set[str],
+    preferred_flag: str,
+    value: str | None = None,
+    alternates: tuple[str, ...] = (),
+) -> bool:
+    candidates = (preferred_flag, *alternates)
+    chosen = next((flag for flag in candidates if flag in supported_flags), None)
+    if chosen is None:
+        return False
+    cmd.append(chosen)
+    if value is not None:
+        cmd.append(value)
+    return True
 
 
 def parse_env(path: Path) -> dict[str, str]:
@@ -215,11 +248,14 @@ def start_services(env: dict[str, str], webui_auth: bool, tts_port: str) -> None
     ctx_size = env.get("CTX_SIZE", "8192")
     n_gpu_layers = env.get("N_GPU_LAYERS", "999")
     threads = env.get("THREADS", "8")
+    enable_thinking = env.get("ENABLE_THINKING", "false").strip().lower() in {"1", "true", "yes", "on"}
+    llama_extra_args = env.get("LLAMA_SERVER_EXTRA_ARGS", "").strip()
     openai_api_key = env.get("OPENAI_API_KEY", "unused")
     default_models = env.get("DEFAULT_MODELS", f"/workspace/models/{model_file}")
     model_timeout = env.get("AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST", "120")
     vibevoice_tts_model = env.get("VIBEVOICE_TTS_MODEL", "microsoft/VibeVoice-Realtime-0.5B")
     vibevoice_strip_think = env.get("VIBEVOICE_STRIP_THINK_FOR_TTS", "true")
+    supported_flags = get_server_supported_flags(python_bin)
 
     llama_cmd = [
         python_bin,
@@ -238,6 +274,24 @@ def start_services(env: dict[str, str], webui_auth: bool, tts_port: str) -> None
         "--n_threads",
         threads,
     ]
+    if not append_supported_flag(llama_cmd, supported_flags, "--jinja"):
+        print("Info: installed llama_cpp.server does not support --jinja; skipping.")
+    if not append_supported_flag(llama_cmd, supported_flags, "--reasoning-budget", "0"):
+        print("Info: installed llama_cpp.server does not support --reasoning-budget; skipping.")
+    if not enable_thinking:
+        append_supported_flag(llama_cmd, supported_flags, "--temp", "0.7", alternates=("--temperature",))
+        append_supported_flag(llama_cmd, supported_flags, "--top-p", "0.8", alternates=("--top_p",))
+        append_supported_flag(llama_cmd, supported_flags, "--top-k", "20", alternates=("--top_k",))
+        append_supported_flag(llama_cmd, supported_flags, "--min-p", "0", alternates=("--min_p",))
+        append_supported_flag(
+            llama_cmd,
+            supported_flags,
+            "--chat_template_kwargs",
+            json.dumps({"enable_thinking": False}, separators=(",", ":")),
+            alternates=("--chat-template-kwargs",),
+        )
+    if llama_extra_args:
+        llama_cmd += shlex.split(llama_extra_args)
 
     webui_env = os.environ.copy()
     webui_env.update(
@@ -330,6 +384,7 @@ def main() -> int:
         "MODEL_FILE": model_file,
         "N_GPU_LAYERS": env.get("N_GPU_LAYERS", "999") or "999",
         "OPENAI_API_BASE_URL": "http://127.0.0.1:8080/v1",
+        "ENABLE_THINKING": env.get("ENABLE_THINKING", "false") or "false",
         "AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST": env.get("AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST", "120") or "120",
         "DEFAULT_MODELS": default_model_path if args.model_url else (env.get("DEFAULT_MODELS", default_model_path) or default_model_path),
         "VIBEVOICE_API_PORT": env.get("VIBEVOICE_API_PORT", args.tts_port) or args.tts_port,
