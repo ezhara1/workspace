@@ -26,4 +26,6 @@ curl -sS "http://127.0.0.1:${PORT}/health" || true
 echo
 echo "VibeVoice API started on: http://127.0.0.1:${PORT}/v1"
 echo "VIBEVOICE_REQUIRE_CUDA=${REQUIRE_CUDA}"
-echo "OpenWebUI TTS voice: alloy"
+DEFAULT_TTS_VOICE="${VIBEVOICE_TTS_VOICES:-en-Carter_man}"
+DEFAULT_TTS_VOICE="${DEFAULT_TTS_VOICE%%,*}"
+echo "OpenWebUI TTS voice: ${DEFAULT_TTS_VOICE}"

@@ -212,6 +212,12 @@ VibeVoice env knobs in `.env`:
 - `VIBEVOICE_REQUIRE_CUDA`
 - `VIBEVOICE_TTS_MODEL`
 - `VIBEVOICE_STRIP_THINK_FOR_TTS`
+- `VIBEVOICE_TTS_VOICES` (comma-separated exposed voice ids, defaults to demo speakers: `en-Carter_man,en-Davis_man,en-Emma_woman,en-Frank_man,en-Grace_woman,en-Mike_man,in-Samuel_man`)
+- `VIBEVOICE_TTS_VOICE_PROMPT_BASE_URL` (base URL for `<voice>.pt` prompt auto-download)
+- `VIBEVOICE_TTS_VOICE_PROMPT_MAP` (optional JSON map voice -> prompt URL/path)
+
+llama.cpp (manual mode) reasoning knob in `.env`:
+- `ENABLE_THINKING` (`true` or `false`; defaults to `false`)
 
 llama.cpp (manual mode) reasoning knob in `.env`:
 - `ENABLE_THINKING` (`true` or `false`; defaults to `false`)
@@ -276,7 +282,7 @@ Open WebUI TTS settings:
 1. Engine: `OpenAI`
 2. Base URL: `http://127.0.0.1:9001/v1`
 3. API Key: any non-empty value (example: `sk-local`)
-4. TTS Voice: `alloy`
+4. TTS Voice: one of `/v1/audio/voices` (all configured voices are preloaded at API startup so they can be selected/typed immediately)
 5. TTS Model: `microsoft/VibeVoice-Realtime-0.5B`
 
 Think-tag control for TTS (`<think>...</think>`):
