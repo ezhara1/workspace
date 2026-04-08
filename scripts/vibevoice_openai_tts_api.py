@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import copy
 import io
+import json
 import os
 import re
 import threading
@@ -43,6 +44,19 @@ TTS_VOICE_PROMPT_PATH = Path(
         "/workspace/models/voice_prompts/en-Carter_man.pt",
     )
 )
+TTS_VOICE_PROMPT_BASE_URL = os.getenv(
+    "VIBEVOICE_TTS_VOICE_PROMPT_BASE_URL",
+    "https://raw.githubusercontent.com/microsoft/VibeVoice/main/demo/voices/streaming_model",
+).rstrip("/")
+TTS_VOICES = [
+    voice.strip()
+    for voice in os.getenv(
+        "VIBEVOICE_TTS_VOICES",
+        "en-Carter_man,en-Davis_man,en-Emma_woman,en-Frank_man,en-Grace_woman,en-Mike_man,in-Samuel_man",
+    ).split(",")
+    if voice.strip()
+]
+TTS_VOICE_PROMPT_MAP_RAW = os.getenv("VIBEVOICE_TTS_VOICE_PROMPT_MAP", "").strip()
 
 
 class SpeechRequest(BaseModel):
@@ -56,6 +70,21 @@ app = FastAPI(title="VibeVoice OpenAI-Compatible TTS API")
 _tts_backend: dict[str, Any] | None = None
 _tts_lock = threading.Lock()
 THINK_BLOCK_PATTERN = re.compile(r"<think>.*?</think>", flags=re.IGNORECASE | re.DOTALL)
+
+
+def _parse_voice_prompt_map(raw: str) -> dict[str, str]:
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except Exception as exc:
+        raise RuntimeError("VIBEVOICE_TTS_VOICE_PROMPT_MAP must be a JSON object") from exc
+    if not isinstance(parsed, dict):
+        raise RuntimeError("VIBEVOICE_TTS_VOICE_PROMPT_MAP must be a JSON object")
+    return {str(k): str(v) for k, v in parsed.items()}
+
+
+VOICE_PROMPT_MAP = _parse_voice_prompt_map(TTS_VOICE_PROMPT_MAP_RAW)
 
 
 def _to_wav_bytes(audio_array: np.ndarray, sampling_rate: int) -> bytes:
@@ -93,14 +122,41 @@ def _pick_torch_dtype(device: str) -> torch.dtype:
     return torch.float32
 
 
-def _load_voice_prompt(device: str) -> dict[str, Any]:
-    TTS_VOICE_PROMPT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if not TTS_VOICE_PROMPT_PATH.exists():
-        response = requests.get(TTS_VOICE_PROMPT_URL, timeout=60)
-        response.raise_for_status()
-        TTS_VOICE_PROMPT_PATH.write_bytes(response.content)
+def _resolve_voice_prompt_path(voice: str) -> Path:
+    voice_source = VOICE_PROMPT_MAP.get(voice, "").strip()
+    if not voice_source:
+        default_path = TTS_VOICE_PROMPT_PATH.parent / f"{voice}.pt"
+        if default_path.exists():
+            return default_path
 
-    prompt = torch.load(str(TTS_VOICE_PROMPT_PATH), map_location=device, weights_only=False)
+        if TTS_VOICE_PROMPT_BASE_URL:
+            response = requests.get(f"{TTS_VOICE_PROMPT_BASE_URL}/{voice}.pt", timeout=60)
+            response.raise_for_status()
+            default_path.parent.mkdir(parents=True, exist_ok=True)
+            default_path.write_bytes(response.content)
+            return default_path
+
+        return TTS_VOICE_PROMPT_PATH
+    if voice_source.startswith(("http://", "https://")):
+        out = TTS_VOICE_PROMPT_PATH.parent / f"{voice}.pt"
+        if not out.exists():
+            response = requests.get(voice_source, timeout=60)
+            response.raise_for_status()
+            out.write_bytes(response.content)
+        return out
+    return Path(voice_source)
+
+
+def _load_voice_prompt(device: str, voice: str) -> dict[str, Any]:
+    resolved = _resolve_voice_prompt_path(voice)
+    if resolved == TTS_VOICE_PROMPT_PATH:
+        TTS_VOICE_PROMPT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        if not TTS_VOICE_PROMPT_PATH.exists():
+            response = requests.get(TTS_VOICE_PROMPT_URL, timeout=60)
+            response.raise_for_status()
+            TTS_VOICE_PROMPT_PATH.write_bytes(response.content)
+
+    prompt = torch.load(str(resolved), map_location=device, weights_only=False)
     if not isinstance(prompt, dict):
         raise RuntimeError("VibeVoice prompt file is invalid")
     return prompt
@@ -154,14 +210,31 @@ def _ensure_tts_backend() -> dict[str, Any]:
         "model": model,
         "processor": processor,
         "device": device,
-        "prompt": _load_voice_prompt(device),
+        "prompts": {},
     }
     return _tts_backend
 
 
+def _available_voices() -> list[str]:
+    if VOICE_PROMPT_MAP:
+        return sorted(set(TTS_VOICES + list(VOICE_PROMPT_MAP.keys())))
+    return TTS_VOICES
+
+
+def _get_voice_prompt(backend: dict[str, Any], voice: str) -> dict[str, Any]:
+    prompts: dict[str, dict[str, Any]] = backend["prompts"]
+    if voice not in prompts:
+        prompts[voice] = _load_voice_prompt(backend["device"], voice)
+    return prompts[voice]
+
+
 @app.on_event("startup")
 def warmup_tts_backend() -> None:
-    _ensure_tts_backend()
+    backend = _ensure_tts_backend()
+    # Preload all configured voices at startup so they are immediately selectable
+    # from clients like Open WebUI and do not fail on first use.
+    for voice in _available_voices():
+        _get_voice_prompt(backend, voice)
 
 
 @app.get("/health")
@@ -181,7 +254,8 @@ def audio_models() -> dict[str, list[dict[str, str]]]:
 
 @app.get("/v1/audio/voices")
 def audio_voices() -> dict[str, list[dict[str, str]]]:
-    return {"data": [{"id": "alloy", "object": "voice", "name": "alloy"}]}
+    voices = _available_voices()
+    return {"data": [{"id": voice, "object": "voice", "name": voice} for voice in voices]}
 
 
 @app.post("/v1/audio/speech")
@@ -200,13 +274,18 @@ def speech(req: SpeechRequest) -> Response:
         fmt = "wav"
     elif fmt not in {"wav", "pcm"}:
         fmt = "wav"
+    voices = _available_voices()
+    default_voice = voices[0] if voices else "en-Carter_man"
+    requested_voice = (req.voice or default_voice).strip()
+    if requested_voice not in voices:
+        raise HTTPException(status_code=400, detail=f"Unknown voice '{requested_voice}'. Available: {', '.join(voices)}")
 
     try:
         with _tts_lock:
             backend = _ensure_tts_backend()
             model = backend["model"]
             processor = backend["processor"]
-            prompt = backend["prompt"]
+            prompt = _get_voice_prompt(backend, requested_voice)
             device = backend["device"]
 
             inputs = processor.process_input_with_cached_prompt(

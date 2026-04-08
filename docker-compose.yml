@@ -6,6 +6,9 @@ services:
     env_file:
       - .env
     command:
+      - --jinja
+      - --reasoning-budget
+      - ${LLAMA_REASONING_BUDGET_NO_THINKING:-0}
       - --model
       - /models/${MODEL_FILE}
       - --host
